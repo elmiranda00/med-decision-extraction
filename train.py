@@ -169,7 +169,6 @@ def train(meddec_dir, splits_dir, model_name   = "google/electra-base-discrimina
                 best_path     = output_dir / "best_model.pt"
                 torch.save(model.state_dict(), best_path)
                 print(f"  → Checkpoint saved: {best_path}")
-                
                 mlflow.log_metric("best_val_loss", best_val_loss, step=epoch)
 
         # Save final weights too

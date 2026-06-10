@@ -1,38 +1,15 @@
-"""
-Phase 2.4 — Span-level F1 evaluation for the fine-tuned ELECTRA model.
-
-Key idea: token-level accuracy (used during training) is misleading because most
-tokens are labelled O.  Span-level F1 only counts a prediction as correct if the
-entire span (category + start token + end token) matches the gold annotation exactly.
-
-Can be run independently with a saved checkpoint:
-    python evaluate.py \\
-        --checkpoint  checkpoints/best_model.pt \\
-        --meddec_dir  /path/to/meddec-mimic-iii \\
-        --splits_dir  /path/to/meddec-mimic-iii/splits \\
-        --split       test
-"""
-
 import argparse
 from pathlib import Path
 
 import torch
 
-from dataset import (
-    MedDecDataset,
-    NUM_CATEGORIES,
-    NUM_LABELS,
-    LABEL_O,
-    LABEL_PAD,
-    load_electra_tokenizer,
-)
+from dataset import MedDecDataset, NUM_CATEGORIES, NUM_LABELS, LABEL_O, LABEL_PAD, load_electra_tokenizer
 from model import MedDecModel
 
 
 MAX_LEN = 512   # ELECTRA's positional-embedding limit
 
-CATEGORY_NAMES = [
-    "Contact-related",
+CATEGORY_NAMES = ["Contact-related",
     "Gathering information",
     "Defining problem",
     "Treatment goal",
@@ -40,8 +17,7 @@ CATEGORY_NAMES = [
     "Therapeutic procedure",
     "Evaluating test result",
     "Deferment",
-    "Advice and precaution",
-]
+    "Advice and precaution",]
 
 
 # BIO DECODING
@@ -49,20 +25,16 @@ CATEGORY_NAMES = [
 def bio_decode(labels: list) -> list:
     """
     Convert a flat sequence of BIO label indices into a list of (category, start, end) spans.
+    - B-n label starts a new span of category n.
+    - I-n  label continues the current span IF it matches category n
+    - O / PAD :closes any open span
 
-    Rules:
-      - B-n  (label = n*2)      starts a new span of category n
-      - I-n  (label = n*2+1)    continues the current span IF it matches category n
-      - O / PAD                 closes any open span
-
-    Robustness: an I-n that appears without a matching B-n is treated as a new B-n
-    (avoids silently dropping valid spans due to a single mispredicted B token).
+    Robustness: an I-n that appears without a matching B-n is treated as a new B-n (to avoid silently dropping valid spans due to a single mispredicted B token).
 
     Args:
-        labels: list of integer label indices (LABEL_O=18, LABEL_PAD=-100, B=n*2, I=n*2+1)
+        labels: list of integer label indices
 
-    Returns:
-        list of (category: int, start: int, end: int)
+    Returns: list of (category: int, start: int, end: int)
             category  — 0-indexed (0..8)
             start     — inclusive token index
             end       — exclusive token index  (span = tokens[start:end])
@@ -72,19 +44,23 @@ def bio_decode(labels: list) -> list:
     current_start = None
 
     for i, label in enumerate(labels):
-        if label == LABEL_PAD or label == LABEL_O:
-            # Close any open span
+        
+        # Close any open span
+        if label == LABEL_PAD or label == LABEL_O:    
             if current_cat is not None:
                 spans.append((current_cat, current_start, i))
                 current_cat = None
+        
+        # B-tag: always starts a new span (close previous if open)
         elif label % 2 == 0:
-            # B-tag: always starts a new span (close previous if open)
             if current_cat is not None:
                 spans.append((current_cat, current_start, i))
             current_cat   = label // 2
             current_start = i
+        
+        # I-tag
         else:
-            # I-tag
+            
             cat = label // 2
             if current_cat == cat:
                 pass   # extend current span — do nothing
@@ -106,19 +82,15 @@ def bio_decode(labels: list) -> list:
 
 def predict_full_note(model, input_ids: list, attention_mask: list, device, max_len: int = MAX_LEN) -> list:
     """
-    Run the model on a note of arbitrary length by splitting into non-overlapping
-    max_len-token chunks and concatenating the argmax predictions.
-
-    Why chunking instead of truncation?
-      Truncation would silently miss all annotations in the second half of a long
-      note.  The average MedDec note is ~1,600 tokens — well beyond ELECTRA's 512
-      limit — so this matters for recall.
+    Split a note into non-overlapping chunks (of length MAX_LEN = 512 tokens, ELECTRA limit)
+    Concatenate the argmax predictions.
 
     Args:
         model:         MedDecModel in eval mode
         input_ids:     full token ID list (no length limit)
         attention_mask: corresponding mask list
         device:        torch device
+        max
 
     Returns:
         preds: list of predicted label indices, same length as input_ids
@@ -139,37 +111,28 @@ def predict_full_note(model, input_ids: list, attention_mask: list, device, max_
     return all_preds
 
 
-# SPAN-LEVEL F1
+# COMPUTATION OF SPAN-LEVEL F1
 
 def compute_span_f1(gold_spans: set, pred_spans: set) -> dict:
     """
     Compute precision, recall, and F1 from two sets of (sample_idx, cat, start, end) tuples.
-    A predicted span is a TP only if ALL four fields match exactly.
+    True positive only if ALL four fields match exactly.
     """
     tp = len(pred_spans & gold_spans)
     fp = len(pred_spans) - tp
     fn = len(gold_spans) - tp
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1        = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    recall  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
-    return {"precision": precision, "recall": recall, "f1": f1,
-            "tp": tp, "fp": fp, "fn": fn}
+    return {"precision": precision, "recall": recall, "f1": f1, "tp": tp, "fp": fp, "fn": fn}
 
 
 def evaluate(model, dataset: MedDecDataset, device, max_len: int = MAX_LEN) -> dict:
     """
     Run full span-level evaluation over a MedDecDataset split.
-
-    Why iterate over dataset.samples directly instead of the DataLoader?
-      Each note needs its *full* token sequence — the DataLoader's collate pads
-      to batch length and the windowing in __getitem__ truncates for training.
-      Iterating samples directly avoids both issues and lets us chunk manually.
-
-    Returns a dict with:
-      overall   — precision, recall, f1, tp, fp, fn, n_gold, n_pred
-      per_cat   — same breakdown for each of the 9 categories
+    Returns a dict with overall and per category metrics
     """
     model.eval()
 
@@ -178,24 +141,22 @@ def evaluate(model, dataset: MedDecDataset, device, max_len: int = MAX_LEN) -> d
 
     for sample_idx, sample in enumerate(dataset.samples):
 
-        # ── Gold spans from the pre-built label sequence ──────────────────────
+        # Gold spans (human annotated) from the pre-built label sequence
         gold_labels = sample["labels"]
         for cat, start, end in bio_decode(gold_labels):
             all_gold.add((sample_idx, cat, start, end))
 
-        # ── Predicted spans from chunked model inference ──────────────────────
-        preds = predict_full_note(
-            model, sample["input_ids"], sample["attention_mask"], device, max_len
-        )
+        # Predicted spans from chunked model inference
+        preds = predict_full_note(model, sample["input_ids"], sample["attention_mask"], device, max_len)
         for cat, start, end in bio_decode(preds):
             all_pred.add((sample_idx, cat, start, end))
 
-    # ── Overall metrics ────────────────────────────────────────────────────────
+    # Calc overall metrics
     overall = compute_span_f1(all_gold, all_pred)
     overall["n_gold"] = len(all_gold)
     overall["n_pred"] = len(all_pred)
 
-    # ── Per-category metrics ───────────────────────────────────────────────────
+    # Calc per-category metrics
     per_cat = {}
     for cat in range(NUM_CATEGORIES):
         cat_gold = {s for s in all_gold if s[1] == cat}
@@ -208,10 +169,11 @@ def evaluate(model, dataset: MedDecDataset, device, max_len: int = MAX_LEN) -> d
     return {"overall": overall, "per_cat": per_cat}
 
 
-# PRETTY PRINTING
+# PRINT RESULTS FUNCTION
 
 def print_results(results: dict, split_name: str = "test") -> None:
     """Print a formatted evaluation report."""
+    
     ov = results["overall"]
     print(f"\n{'='*60}")
     print(f"  Span-level F1 — {split_name.upper()} SET")
@@ -233,30 +195,22 @@ def print_results(results: dict, split_name: str = "test") -> None:
     print(f"{'='*60}\n")
 
 
-# STANDALONE ENTRY POINT
+# ENTRY POINT
 
-def run_evaluation(
-    checkpoint_path,
-    meddec_dir,
-    splits_dir,
-    model_name = "google/electra-base-discriminator",
-    split      = "test",
-    max_len    = MAX_LEN,
-):
-    """Load a checkpoint and evaluate on a given split. GPU optional."""
+def run_evaluation(checkpoint_path, meddec_dir, splits_dir, model_name = "google/electra-base-discriminator", 
+                   split = "test", max_len = MAX_LEN,):
+    """Load a trained model checkpoint and evaluate on the test set"""
+    
     checkpoint_path = Path(checkpoint_path)
     meddec_dir      = Path(meddec_dir)
     splits_dir      = Path(splits_dir)
 
-    # CPU works fine for evaluation — just slower (~2–5 min vs ~20 s on GPU)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
+    # Tokenization and dataset prep
     tokenizer = load_electra_tokenizer(model_name)
-    dataset   = MedDecDataset(
-        splits_dir / f"{split}.txt", meddec_dir, tokenizer,
-        train=False, max_len=max_len,
-    )
+    dataset   = MedDecDataset(splits_dir / f"{split}.txt", meddec_dir, tokenizer, train=False, max_len=max_len,)
     print(f"Loaded {len(dataset)} notes from {split} split.")
 
     # Reconstruct model architecture and load saved weights
@@ -265,6 +219,7 @@ def run_evaluation(
     model.load_state_dict(state)
     print(f"Loaded checkpoint: {checkpoint_path}")
 
+    # Evals and print results
     results = evaluate(model, dataset, device, max_len)
     print_results(results, split_name=split)
     return results
@@ -283,11 +238,5 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    run_evaluation(
-        checkpoint_path = args.checkpoint,
-        meddec_dir      = args.meddec_dir,
-        splits_dir      = args.splits_dir,
-        model_name      = args.model_name,
-        split           = args.split,
-        max_len         = args.max_len,
-    )
+    run_evaluation(checkpoint_path = args.checkpoint, meddec_dir = args.meddec_dir, splits_dir  = args.splits_dir, 
+                   model_name = args.model_name, split = args.split, max_len = args.max_len,)
