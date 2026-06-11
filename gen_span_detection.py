@@ -78,18 +78,19 @@ def get_demo(annotations: dict, target_cat: int):
 
 # PROMPTING FUNCTIONS
 
-def _prompt_seq2seq(note: str, cat_idx_0: int, demo_text: str = None) -> str:
+def _prompt_seq2seq(note: str, cat_idx_0: int, demo_text: str = None, demo_cat_idx_0: int = None) -> str:
     """Plain-text/Direct Instruction prompt for encoder-decoder models (FLAN-T5)"""
-    
+
     cat_desc = CATEGORY_DESCRIPTIONS[cat_idx_0]
 
     if demo_text:
-        # One-shot: show an example first
+        # One-shot: show an example first, labelled with the correct demo category
+        demo_cat_desc = CATEGORY_DESCRIPTIONS[demo_cat_idx_0] if demo_cat_idx_0 is not None else "a medical decision category"
         prompt = (
             f"Task: Extract all substrings from a clinical note that represent "
             f"medical decisions of the specified category. "
             f"Print each decision on a new line. If none exist, output 'None'.\n\n"
-            f"Example category: {CATEGORY_DESCRIPTIONS[cat_idx_0]}\n"
+            f"Example category: {demo_cat_desc}\n"
             f"Example decisions:\n{demo_text}\n\n"
             f"Now extract from the following note.\n"
             f"Category: {cat_desc}\n"
@@ -222,29 +223,33 @@ def parse_output(raw_text: str) -> list:
 
 def run_pipeline(meddec_dir, splits_dir, model_name = "google/flan-t5-small", output_dir = "gens/test_zero_shot",
     split = "test", mode = "zero_shot", max_samples  = None, max_new_tokens = 256,):
-    
+
     """
-    Run zero-shot or one-shot LLM extraction on a data split.
+    Run pipeline for zero-shot or one-shot LLM-based decision span extraction from medical notes
+    Saves the detected spans along with their categories as JSON outputs into output_dir
     """
     meddec_dir = Path(meddec_dir)
     splits_dir = Path(splits_dir)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)  # output_dir is on Drive — persists across Colab sessions
 
+    # Read the list of note filenames
     filenames = [ln.strip() for ln in (splits_dir / f"{split}.txt").read_text(encoding="utf-8").splitlines() if ln.strip()]
     if max_samples:
-        filenames = filenames[:max_samples]
+        filenames = filenames[:max_samples]  # useful for quick smoke tests
 
+    # Load the model
     model, tokenizer, model_type = load_model(model_name)
     device = next(model.parameters()).device if model_type == "seq2seq" else None
 
-    skipped = 0
-    
+    skipped = 0 # counter for skipped notes
+
+    # Loop through the files
     for fname in tqdm(filenames, desc=f"{mode} | {split}"):
         stem     = Path(fname).stem
         out_path = output_dir / f"{stem}.json"
 
-        # Resume: skip if already processed
+        # If we already have output for this note, skip and move on to the next note
         if out_path.exists():
             continue
 
@@ -257,14 +262,16 @@ def run_pipeline(meddec_dir, splits_dir, model_name = "google/flan-t5-small", ou
 
         note_text   = txt_path.read_text(encoding="utf-8")
         ann_data    = json.loads(json_path.read_text(encoding="utf-8"))
-        annotations = group_annotations(ann_data.get("annotations", []))
+        annotations = group_annotations(ann_data.get("annotations", []))  # used only for one-shot demo selection
 
         predictions = {}
 
         try:
+            # Query the model once per category (i.e. 9 calls per note)
             for cat_1 in range(1, NUM_CATEGORIES + 1):
-                cat_0 = cat_1 - 1
+                cat_0 = cat_1 - 1  # 0-indexed for CATEGORY_DESCRIPTIONS list
 
+                # For one-shot prompting, pick an example annotation from a different category in the same note
                 if mode == "one_shot":
                     demo_cat_1, demo_text = get_demo(annotations, target_cat=cat_1)
                     demo_cat_0 = (demo_cat_1 - 1) if demo_cat_1 is not None else None
@@ -272,26 +279,24 @@ def run_pipeline(meddec_dir, splits_dir, model_name = "google/flan-t5-small", ou
                     demo_text  = None
                     demo_cat_0 = None
 
+                # Build prompt and generate the output
                 if model_type == "seq2seq":
-                    prompt_text = _prompt_seq2seq(note_text, cat_0, demo_text=demo_text)
+                    prompt_text = _prompt_seq2seq(note_text, cat_0, demo_text=demo_text, demo_cat_idx_0=demo_cat_0)
                     raw = _generate_seq2seq(model, tokenizer, prompt_text, max_new_tokens)
                 else:
-                    input_ids = _prompt_causal(
-                        note_text, cat_0, tokenizer,
-                        demo_cat_idx_0=demo_cat_0, demo_text=demo_text,
-                    ).to(device or next(model.parameters()).device)
+                    input_ids = _prompt_causal(note_text, cat_0, tokenizer, demo_cat_idx_0=demo_cat_0, demo_text=demo_text,).to(device or next(model.parameters()).device)
                     raw = _generate_causal(model, tokenizer, input_ids, max_new_tokens)
 
+                # Parse raw LLM output into a clean list of decision strings
                 predictions[str(cat_1)] = parse_output(raw)
 
+        # Error handling if note is too long for available RAM
         except torch.cuda.OutOfMemoryError:
             print(f"\nOOM on {fname} — skipping.")
             skipped += 1
             continue
 
-        out_path.write_text(
-            json.dumps({"file_name": fname, "predictions": predictions}, indent=2),
-            encoding="utf-8",
-        )
+        # Generate the output for this note: write all 9 categories + their decision spans to a JSON file
+        out_path.write_text(json.dumps({"file_name": fname, "predictions": predictions}, indent=2),encoding="utf-8",)
 
     print(f"\nDone. Skipped {skipped} files. Results in {output_dir}")
