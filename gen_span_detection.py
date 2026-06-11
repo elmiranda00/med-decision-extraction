@@ -173,9 +173,14 @@ def load_model(model_name: str):
 def _generate_seq2seq(model, tokenizer, prompt: str, max_new_tokens: int = 256) -> str:
     device = next(model.parameters()).device
     inputs = tokenizer(prompt, return_tensors="pt", max_length=FLAN_T5_MAX_SOURCE, truncation=True,).to(device)
-    
+
     with torch.no_grad():
-        out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+        out_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            no_repeat_ngram_size=3,  # breaks repetition loops ("X X X X...")
+            repetition_penalty=1.3,  # further penalises any repeated tokens
+        )
     return tokenizer.decode(out_ids[0], skip_special_tokens=True)
 
 
@@ -195,14 +200,17 @@ def _generate_causal(model, tokenizer, input_ids, max_new_tokens: int = 256) -> 
 
 def parse_output(raw_text: str) -> list:
     """
-    Turn raw LLM output into a clean list of decision strings. 
+    Turn raw LLM output into a clean list of decision strings.
     - Strip bullet markers, surrounding quotes, and numbering.
-    - Drop lines that are empty or say "None".
+    - Strip category name prefixes the model sometimes echoes (e.g. "Defining problem: ...").
+    - Drop lines that are empty, say "None", or are suspiciously long (degenerate repetition).
     """
-    
+    # Short prefixes the model echoes, derived from CATEGORY_DESCRIPTIONS
+    cat_prefixes = tuple(d.split(":")[0].lower() + ":" for d in CATEGORY_DESCRIPTIONS)
+
     lines = raw_text.split("\n")
     cleaned = []
-    
+
     for line in lines:
         line = line.strip()
         # Remove common list markers: "1. ", "* ", "- ", "• "
@@ -214,8 +222,20 @@ def parse_output(raw_text: str) -> list:
             line = line[3:]
         # Remove surrounding quotes
         line = line.strip('"\'').strip()
-        if line and line.lower() not in ("none", "none.", "n/a"):
-            cleaned.append(line)
+
+        # Strip category prefix echoed by the model (e.g. "Defining problem: <decision>")
+        line_lower = line.lower()
+        for prefix in cat_prefixes:
+            if line_lower.startswith(prefix):
+                line = line[len(prefix):].strip()
+                break
+
+        # Drop empties, Nones, and long strings (>500 chars = degenerate repetition loop)
+        if not line or line.lower() in ("none", "none.", "n/a"):
+            continue
+        if len(line) > 500:
+            continue
+        cleaned.append(line)
     return cleaned
 
 
@@ -288,6 +308,7 @@ def run_pipeline(meddec_dir, splits_dir, model_name = "google/flan-t5-small", ou
                     raw = _generate_causal(model, tokenizer, input_ids, max_new_tokens)
 
                 # Parse raw LLM output into a clean list of decision strings
+                # Evnentually predictions[List] will look like "predictions": {"1": [span1, span2,...], "2": [...], ..., "9": [...]}}.
                 predictions[str(cat_1)] = parse_output(raw)
 
         # Error handling if note is too long for available RAM
