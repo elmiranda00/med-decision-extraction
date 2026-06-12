@@ -23,7 +23,7 @@ A pretrained language model (FLAN-T5) is prompted once per category per note to 
 
 ## Files
 
-### Data preparation (run once before training)
+**Data preparation** (run once before training)
 
 | File | What it does |
 |---|---|
@@ -32,7 +32,7 @@ A pretrained language model (FLAN-T5) is prompted once per category per note to 
 | preprocess_phenos.py | Processes phenotype annotations into one label per note |
 | build_splits.py | Creates 80/10/10 train/val/test splits by subject to avoid data leakage |
 
-### Phase 2 — ELECTRA
+**ELECTRA**
 
 | File | What it does |
 |---|---|
@@ -41,19 +41,19 @@ A pretrained language model (FLAN-T5) is prompted once per category per note to 
 | train.py | Training loop: AdamW optimiser, linear warmup, gradient accumulation, MLflow logging |
 | evaluate.py | Chunked inference, BIO decoding, and span-level F1 computation |
 
-### Phase 3 — LLM prompting
+**LLM Prompting**
 
 | File | What it does |
 |---|---|
 | gen_span_detection.py | Prompt construction, model loading, generation, output parsing, and pipeline runner |
 | eval_gen.py | String-level F1 evaluation (exact match and approximate match) |
 
-### Notebooks
+**Notebooks**
 
 | Notebook | What it does |
 |---|---|
 | workingfolder/train_electra.ipynb | Full ELECTRA train, evaluate, MLflow summary, and checkpoint save workflow for Colab |
-| workingfolder/train_flan.ipynb | Full FLAN-T5 zero-shot and one-shot pipeline with evaluation and README figures for Colab |
+| workingfolder/train_flan.ipynb | Full FLAN-T5 zero-shot and one-shot pipeline with evaluation for Colab |
 
 ---
 
@@ -63,10 +63,10 @@ A pretrained language model (FLAN-T5) is prompted once per category per note to 
 
 **Recommended: Google Colab (free tier, T4 GPU)**
 
-1. Upload the data folder to Google Drive under `MyDrive/AI4H-project-rework/02 Data/`
-2. Upload the code folder to `MyDrive/AI4H-project-rework/04 Code/04 Code/med-decision-extraction/`
-3. Open `workingfolder/train_electra.ipynb` in Colab for ELECTRA training. 5 epochs takes around 3 minutes on a T4.
-4. Open `workingfolder/train_flan.ipynb` in Colab for LLM prompting. The full test set takes around 22 minutes per mode with flan-t5-xl.
+1. Upload the data folder to Google Drive under `MyDrive/<your project folder name>/02 Data/`
+2. Upload the code folder to `MyDrive/<your project folder name>/04 Code/04 Code/med-decision-extraction/`
+3. Open `workingfolder/train_electra.ipynb` in Colab for ELECTRA training.
+4. Open `workingfolder/train_flan.ipynb` in Colab for LLM based extraction and classification
 
 
 Install dependencies:
