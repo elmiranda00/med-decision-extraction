@@ -1,0 +1,20 @@
+# Core ML
+torch>=2.2.1
+transformers>=4.41.0
+accelerate>=0.27.0
+
+# Tokenisation (required for FLAN-T5)
+sentencepiece>=0.1.99
+
+# Data and evaluation
+pandas>=2.1.4
+numpy>=1.26.4
+scikit-learn>=1.4.2
+seqeval>=1.2.2
+
+# Experiment tracking
+mlflow>=2.11.0
+
+# Utilities
+tqdm>=4.65.0
+python-dotenv>=1.0.0
