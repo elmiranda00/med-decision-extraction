@@ -1,7 +1,7 @@
 # Medical Decision Extraction from ICU Discharge Summaries
 
 A partial replication of Elgaar et al. (2024), "MedDec: A Dataset for Extracting Medical Decisions from Discharge Summaries" (NeurIPS 2024).
-Paper: https://arxiv.org/abs/2408.12980 — Dataset: https://physionet.org/content/meddec-mimic-iii
+Paper: https://arxiv.org/abs/2408.12980 — Dataset: https://physionet.org/content/meddec/1.0.0/
 
 The goal is to extract and classify spans of text from ICU clinical notes (MIMIC-III discharge summaries) that represent a medical decision, and assign each span to one of 9 decision categories from the DICTUM taxonomy (e.g. Drug, Therapeutic Procedure, Defining Problem).
 
